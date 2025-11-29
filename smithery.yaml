@@ -1,2 +1,4 @@
-# smithery.yaml
 runtime: "typescript"
+startCommand:
+  type: "streamable-http"
+  url: "/mcp"

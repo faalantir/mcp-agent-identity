@@ -1,10 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
-import { generateKeyPairSync, sign } from "crypto";
+import { generateKeyPairSync, sign, randomUUID } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import express from "express";
 
 // --- CONFIGURATION ---
 // We determine the file path safely.
@@ -142,13 +144,44 @@ server.tool(
 
 // --- MAIN ---
 async function main() {
-  // Pure Stdio. No Express. No HTTP. 
-  // Smithery will wrap this automatically.
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  
-  // NOTE: usage of console.error is safe. console.log is NOT safe.
-  console.error("Agent Identity Server running on stdio transport...");
+  const port = process.env.PORT;
+
+  if (port) {
+    // HTTP MODE - Streamable HTTP for Smithery
+    const app = express();
+    app.use(express.json());
+
+    // Create transport once and connect server
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // Stateless mode
+    });
+    await server.connect(transport);
+
+    // Handle all MCP requests
+    app.all("/mcp", async (req, res) => {
+      try {
+        await transport.handleRequest(req, res, req.body);
+      } catch (error: any) {
+        console.error("Error handling request:", error);
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: "Internal server error" },
+            id: null,
+          });
+        }
+      }
+    });
+
+    app.listen(port, () => {
+      console.error(`Agent Identity Server running on HTTP port ${port}`);
+    });
+  } else {
+    // STDIO MODE - Local CLI
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("Agent Identity Server running on stdio transport...");
+  }
 }
 
 main().catch((error) => {
