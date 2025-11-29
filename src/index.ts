@@ -5,9 +5,21 @@ import { z } from "zod";
 import { generateKeyPairSync, sign } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
+import * as os from "os";
 
 // --- CONFIGURATION ---
-const IDENTITY_FILE = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
+let IDENTITY_FILE: string;
+
+try {
+  // Try to use the project folder first (Best for Local Users)
+  IDENTITY_FILE = path.join(path.dirname(process.argv[1]), "..", "identity.json");
+  // Test if we can write here
+  fs.accessSync(path.dirname(IDENTITY_FILE), fs.constants.W_OK);
+} catch (error) {
+  // Fallback: Use the system temp folder (Best for Cloud/Read-Only)
+  console.error("⚠️ Local folder is read-only. Falling back to temporary directory.");
+  IDENTITY_FILE = path.join(os.tmpdir(), "agent-identity.json");
+}
 
 // --- HELPER: Load/Save Keys ---
 function loadIdentity() {
@@ -18,8 +30,7 @@ function loadIdentity() {
       return JSON.parse(fileContent);
     }
   } catch (error) {
-    // If we can't read the file (permissions), just return null (no identity yet)
-    console.error("⚠️ Could not read identity file (likely read-only environment).");
+    console.error("⚠️ Could not load identity.");
     return null;
   }
   return null;
@@ -29,8 +40,7 @@ function saveIdentity(identity: any) {
   try {
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
   } catch (error) {
-    // CRITICAL FIX: Do not crash if save fails!
-    console.error("⚠️ Read-only file system detected. Identity will be stored in-memory only for this session.");
+    console.error(`⚠️ Failed to save identity to ${IDENTITY_FILE}. Running in-memory only.`);
   }
 }
 
@@ -43,20 +53,18 @@ const server = new McpServer({
 // --- TOOL 1: Create Identity ---
 server.tool(
   "create_identity",
-  { name: z.string().describe("The name of the agent (e.g. 'FinanceBot')") },
+  { name: z.string().describe("The name of the agent") },
   async ({ name }) => {
-    // Check if identity already exists to prevent accidental overwrite
     const existing = loadIdentity();
     if (existing) {
       return {
         content: [{ 
           type: "text", 
-          text: `Error: An identity already exists for '${existing.name}'. Delete 'identity.json' to reset.` 
+          text: `Error: An identity already exists for '${existing.name}'.` 
         }]
       };
     }
 
-    // Generate RSA Key Pair
     const { publicKey, privateKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       publicKeyEncoding: { type: "spki", format: "pem" },
@@ -69,7 +77,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `✅ Identity created for ${name}.\n\nYour PUBLIC KEY (ID) is:\n${publicKey}\n\n(I have securely saved the private key to identity.json)`
+        text: `✅ Identity created for ${name}.\n\nPUBLIC KEY:\n${publicKey}`
       }],
     };
   }
@@ -78,25 +86,22 @@ server.tool(
 // --- TOOL 2: Sign Message ---
 server.tool(
   "sign_message",
-  { message: z.string().describe("The text you want to cryptographically sign") },
+  { message: z.string().describe("The text to sign") },
   async ({ message }) => {
     const identity = loadIdentity();
     
     if (!identity) {
       return { 
         isError: true, 
-        content: [{ type: "text", text: "❌ No identity found. Please ask me to 'create an identity' first." }] 
+        content: [{ type: "text", text: "❌ No identity found. Create one first." }] 
       };
     }
 
-    // Sign the data using the stored private key
     const signature = sign("sha256", Buffer.from(message), identity.privateKey);
-    const signatureHex = signature.toString("hex");
-
     return {
       content: [{
         type: "text",
-        text: `Message Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signatureHex}`
+        text: `📝 Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signature.toString("hex")}`
       }],
     };
   }
@@ -106,49 +111,31 @@ server.tool(
 server.tool(
   "verify_signature",
   { 
-    message: z.string().describe("The original message content"),
-    signature: z.string().describe("The hex signature string"),
-    publicKey: z.string().describe("The public key (PEM format)")
+    message: z.string().describe("The original message"),
+    signature: z.string().describe("The hex signature"),
+    publicKey: z.string().describe("The public key")
   },
   async ({ message, signature, publicKey }) => {
-    // 1. CLEAN THE SIGNATURE
-    // Remove all spaces, newlines, and non-hex characters from the signature
     const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
-
-    // 2. CLEAN THE KEY
-    // Ensure it has no leading/trailing whitespace
     let cleanKey = publicKey.trim();
     if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) {
       cleanKey = `-----BEGIN PUBLIC KEY-----\n${cleanKey}\n-----END PUBLIC KEY-----`;
     }
 
-    // 3. DEBUG LOGGING (Check your terminal to see this!)
-    console.error(`--- VERIFYING ---`);
-    console.error(`Message: "${message}"`);
-    console.error(`Signature Length: ${cleanSignature.length}`);
-    
     const verify = require("crypto").createVerify("sha256");
     verify.update(message);
     verify.end();
     
     try {
       const isValid = verify.verify(cleanKey, Buffer.from(cleanSignature, "hex"));
-      
-      if (isValid) {
-        return { content: [{ type: "text", text: "✅ VALID: The signature matches the message and key." }] };
-      } else {
-        return { 
-          content: [{ 
-            type: "text", 
-            text: `❌ INVALID: The math does not match.\n\nCheck: Did you type the message EXACTLY?\nExpected: "${message}"` 
-          }] 
-        };
-      }
-    } catch (e: any) {
-      return { 
-        isError: true, 
-        content: [{ type: "text", text: `System Error: ${e.message}` }] 
+      return {
+        content: [{ 
+          type: "text", 
+          text: isValid ? "✅ VALID" : "❌ INVALID" 
+        }]
       };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] };
     }
   }
 );
@@ -157,7 +144,6 @@ server.tool(
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // Note: STDIO transport logs to stderr, not stdout
   console.error("Agent Identity Server running...");
 }
 
