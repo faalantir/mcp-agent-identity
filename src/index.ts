@@ -1,12 +1,10 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 import { generateKeyPairSync, sign } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import express from "express";
 
 // --- CONFIGURATION ---
 // Safely determine identity file location (Cloud vs Local)
@@ -39,14 +37,16 @@ function saveIdentity(identity: any) {
   }
 }
 
-// --- SERVER SETUP ---
-const server = new McpServer({
-  name: "Agent Identity Wallet",
-  version: "1.0.0",
-});
+// --- SERVER FACTORY ---
+// Export this for Smithery to wrap with HTTP transport
+export function createServer() {
+  const server = new McpServer({
+    name: "Agent Identity Wallet",
+    version: "1.0.0",
+  });
 
-// --- TOOLS ---
-server.tool("create_identity", { name: z.string() }, async ({ name }) => {
+  // --- TOOLS ---
+  server.tool("create_identity", { name: z.string() }, async ({ name }) => {
   if (loadIdentity()) return { content: [{ type: "text", text: `Error: Identity exists.` }] };
   
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
@@ -78,43 +78,17 @@ server.tool("verify_signature", { message: z.string(), signature: z.string(), pu
     const isValid = verify.verify(cleanKey, Buffer.from(cleanSignature, "hex"));
     return { content: [{ type: "text", text: isValid ? "✅ VALID" : "❌ INVALID" }] };
   } catch (e: any) { return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; }
-});
+  });
 
-// --- MAIN ---
+  return server;
+}
+
+// --- MAIN (for local stdio testing) ---
 async function main() {
-  const port = process.env.PORT;
-
-  if (port) {
-    // --- CLOUD MODE (Express + SSE) ---
-    // We use SSE because it is the most compatible with Smithery's current scanner
-    const app = express();
-    
-    // Health Check (Critical for Cloud Scanners)
-    app.get("/health", (req, res) => res.status(200).send("ok"));
-
-    let transport: SSEServerTransport;
-
-    app.get("/sse", async (req, res) => {
-      console.log("SSE Connection started");
-      transport = new SSEServerTransport("/messages", res);
-      await server.connect(transport);
-    });
-
-    app.post("/messages", async (req, res) => {
-      if (transport) {
-        await transport.handlePostMessage(req, res);
-      }
-    });
-
-    app.listen(port, () => {
-      console.error(`Server running on port ${port}`);
-    });
-  } else {
-    // --- LOCAL MODE (Stdio) ---
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Server running on stdio...");
-  }
+  const server = createServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("Agent Identity Server running on stdio...");
 }
 
 main().catch((error) => {
