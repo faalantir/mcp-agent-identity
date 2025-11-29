@@ -173,7 +173,7 @@ async function main() {
       }
     });
 
-    app.listen(port, () => {
+    app.listen(parseInt(port), "0.0.0.0", () => {
       console.error(`Agent Identity Server running on HTTP port ${port}`);
     });
   } else {
