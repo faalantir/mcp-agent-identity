@@ -40,8 +40,9 @@ function saveIdentity(identity: any) {
     const dir = path.dirname(IDENTITY_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
-  } catch (e) {
-    console.error(`⚠️ Disk write failed to ${IDENTITY_FILE}. Identity is RAM-only.`);
+    console.error(`✅ Identity saved to ${IDENTITY_FILE}`);
+  } catch (e: any) {
+    console.error(`⚠️ Disk write failed to ${IDENTITY_FILE}. Error: ${e.message}`);
   }
 }
 
@@ -77,22 +78,46 @@ function createServerInstance() {
     return { content: [{ type: "text", text: `📝 Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signature.toString("hex")}` }] };
   });
 
-  // Tool 4: Verify (FIXED)
-  server.tool("verify_signature", { message: z.string(), signature: z.string(), publicKey: z.string() }, async ({ message, signature, publicKey }) => {
-    const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
-    let cleanKey = publicKey.trim();
-    if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) cleanKey = `-----BEGIN PUBLIC KEY-----\n${cleanKey}\n-----END PUBLIC KEY-----`;
-    
-    // FIX 2: Use the imported function, NOT require()
-    const verify = createVerify("sha256");
-    
-    verify.update(message);
-    verify.end();
-    try {
-      const isValid = verify.verify(cleanKey, Buffer.from(cleanSignature, "hex"));
-      return { content: [{ type: "text", text: isValid ? "✅ VALID" : "❌ INVALID" }] };
-    } catch (e: any) { return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; }
-  });
+  // Tool 4: Verify
+  server.tool(
+    "verify_signature", 
+    { 
+      message: z.string(), 
+      signature: z.string(), 
+      publicKey: z.string().optional().describe("Public key (PEM format). If omitted, uses current identity's key.")
+    }, 
+    async ({ message, signature, publicKey }) => {
+      // If no publicKey provided, try to get it from current identity
+      let keyToUse: string;
+      if (!publicKey) {
+        const identity = loadIdentity();
+        if (!identity) {
+          return { isError: true, content: [{ type: "text", text: "❌ No public key provided and no identity found. Please create an identity first or provide a public key." }] };
+        }
+        keyToUse = identity.publicKey;
+        console.error(`Using public key from current identity: ${identity.name}`);
+      } else {
+        keyToUse = publicKey;
+      }
+
+      const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
+      let cleanKey = keyToUse.trim();
+      if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) {
+        cleanKey = `-----BEGIN PUBLIC KEY-----\n${cleanKey}\n-----END PUBLIC KEY-----`;
+      }
+      
+      const verify = createVerify("sha256");
+      verify.update(message);
+      verify.end();
+      
+      try {
+        const isValid = verify.verify(cleanKey, Buffer.from(cleanSignature, "hex"));
+        return { content: [{ type: "text", text: isValid ? "✅ VALID" : "❌ INVALID" }] };
+      } catch (e: any) { 
+        return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; 
+      }
+    }
+  );
 
   // Tool 5: Revoke
   server.tool("revoke_identity", {}, async () => {
