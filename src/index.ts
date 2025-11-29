@@ -6,7 +6,7 @@ import { generateKeyPairSync, sign } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import * as http from "http"; // Built-in Node module (No npm install needed)
+import express from "express"; // Standard Web Server
 
 // --- GLOBAL BACKUP ---
 let memoryIdentity: any = null;
@@ -46,7 +46,7 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// --- TOOLS (Create/Sign/Verify) ---
+// --- TOOLS ---
 server.tool("create_identity", { name: z.string() }, async ({ name }) => {
   const existing = loadIdentity();
   if (existing) return { content: [{ type: "text", text: `Error: Identity exists for '${existing.name}'.` }] };
@@ -79,33 +79,30 @@ server.tool("verify_signature", { message: z.string(), signature: z.string(), pu
 
 // --- MAIN ---
 async function main() {
-  const port = process.env.PORT; // Smithery injects this
+  // Smithery injects a PORT variable when running in the cloud.
+  // We use this to decide: "Start Web Server" vs "Start CLI Tool"
+  const port = process.env.PORT;
 
   if (port) {
-    // --- HTTP MODE (Smithery) ---
-    let transport = new SSEServerTransport("/messages", new http.ServerResponse(new http.IncomingMessage(null as any)));
-    
-    const httpServer = http.createServer(async (req, res) => {
-      // 1. SSE Connection
-      if (req.url === "/sse") {
-        transport = new SSEServerTransport("/messages", res);
-        await server.connect(transport);
-        return;
-      }
-      // 2. Message Handling
-      if (req.url === "/messages" && req.method === "POST") {
-        await transport.handlePostMessage(req, res);
-        return;
-      }
-      // 404
-      res.writeHead(404);
-      res.end("Not Found");
+    // --- HTTP MODE (Express) ---
+    const app = express();
+    let transport: SSEServerTransport;
+
+    app.get("/sse", async (req, res) => {
+      console.log("Connection received via SSE");
+      transport = new SSEServerTransport("/messages", res);
+      await server.connect(transport);
     });
 
-    httpServer.listen(port, () => {
+    app.post("/messages", async (req, res) => {
+      if (transport) {
+        await transport.handlePostMessage(req, res);
+      }
+    });
+
+    app.listen(port, () => {
       console.error(`Agent Identity Server running on HTTP port ${port}`);
     });
-
   } else {
     // --- STDIO MODE (Local) ---
     const transport = new StdioServerTransport();
