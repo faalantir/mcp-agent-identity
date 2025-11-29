@@ -1,16 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { generateKeyPairSync, sign } from "crypto";
+// FIX 1: Import createVerify here instead of using require() later
+import { generateKeyPairSync, sign, createVerify } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { fileURLToPath } from "url";
 
 // --- CONFIGURATION ---
-// Priority 1: User defined path (via Environment Variable)
-// Priority 2: Project folder (if writable)
-// Priority 3: System Temp folder (Fallback)
 let IDENTITY_FILE: string;
 
 if (process.env.AGENT_IDENTITY_PATH) {
@@ -39,10 +37,8 @@ function loadIdentity() {
 
 function saveIdentity(identity: any) {
   try {
-    // Ensure directory exists if user provided a custom path
     const dir = path.dirname(IDENTITY_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
   } catch (e) {
     console.error(`⚠️ Disk write failed to ${IDENTITY_FILE}. Identity is RAM-only.`);
@@ -66,7 +62,7 @@ function createServerInstance() {
     return { content: [{ type: "text", text: `✅ Identity created for ${name}.\n\nPUBLIC KEY:\n${publicKey}` }] };
   });
 
-  // Tool 2: Get Info (NEW!)
+  // Tool 2: Get Info
   server.tool("get_identity", {}, async () => {
     const identity = loadIdentity();
     if (!identity) return { content: [{ type: "text", text: "ℹ️ No identity found." }] };
@@ -81,12 +77,15 @@ function createServerInstance() {
     return { content: [{ type: "text", text: `📝 Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signature.toString("hex")}` }] };
   });
 
-  // Tool 4: Verify
+  // Tool 4: Verify (FIXED)
   server.tool("verify_signature", { message: z.string(), signature: z.string(), publicKey: z.string() }, async ({ message, signature, publicKey }) => {
     const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
     let cleanKey = publicKey.trim();
     if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) cleanKey = `-----BEGIN PUBLIC KEY-----\n${cleanKey}\n-----END PUBLIC KEY-----`;
-    const verify = require("crypto").createVerify("sha256");
+    
+    // FIX 2: Use the imported function, NOT require()
+    const verify = createVerify("sha256");
+    
     verify.update(message);
     verify.end();
     try {
@@ -95,7 +94,7 @@ function createServerInstance() {
     } catch (e: any) { return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; }
   });
 
-  // Tool 5: Revoke/Delete (NEW!)
+  // Tool 5: Revoke
   server.tool("revoke_identity", {}, async () => {
     try {
       if (fs.existsSync(IDENTITY_FILE)) {
