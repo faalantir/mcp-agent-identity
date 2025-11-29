@@ -83,7 +83,7 @@ async function main() {
 
   if (port) {
     // --- HTTP MODE (Smithery) ---
-    const transport = new SSEServerTransport("/messages", new http.ServerResponse(new http.IncomingMessage(null as any)));
+    let transport = new SSEServerTransport("/messages", new http.ServerResponse(new http.IncomingMessage(null as any)));
     
     const httpServer = http.createServer(async (req, res) => {
       // 1. SSE Connection
