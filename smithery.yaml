@@ -1,4 +1,5 @@
 runtime: "typescript"
 startCommand:
-  type: "streamable-http"
-  url: "/mcp"
+  type: "stdio"
+  command: "node"
+  args: ["dist/index.js"]
