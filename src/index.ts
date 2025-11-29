@@ -7,28 +7,31 @@ import * as fs from "fs";
 import * as path from "path";
 
 // --- CONFIGURATION ---
-const IDENTITY_FILE = path.join(path.dirname(process.argv[1]), "..", "identity.json");
+const IDENTITY_FILE = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
 
 // --- HELPER: Load/Save Keys ---
 function loadIdentity() {
-  if (fs.existsSync(IDENTITY_FILE)) {
-    try {
+  try {
+    if (fs.existsSync(IDENTITY_FILE)) {
       const fileContent = fs.readFileSync(IDENTITY_FILE, "utf-8");
-      // Check if file is empty
-      if (!fileContent.trim()) {
-        return null; 
-      }
+      if (!fileContent.trim()) return null;
       return JSON.parse(fileContent);
-    } catch (error) {
-      console.error("⚠️ Warning: identity.json was corrupt or empty. Starting fresh.");
-      return null; // Return null so we can create a fresh identity
     }
+  } catch (error) {
+    // If we can't read the file (permissions), just return null (no identity yet)
+    console.error("⚠️ Could not read identity file (likely read-only environment).");
+    return null;
   }
   return null;
 }
 
 function saveIdentity(identity: any) {
-  fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
+  try {
+    fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
+  } catch (error) {
+    // CRITICAL FIX: Do not crash if save fails!
+    console.error("⚠️ Read-only file system detected. Identity will be stored in-memory only for this session.");
+  }
 }
 
 // --- SERVER SETUP ---

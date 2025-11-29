@@ -1,1 +1,6 @@
-runtime: "typescript"
+# smithery.yaml
+# We removed 'runtime: typescript' to allow custom start commands
+startCommand:
+  type: "stdio"
+  command: "node"
+  args: ["dist/index.js"]
