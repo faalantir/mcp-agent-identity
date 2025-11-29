@@ -1,3 +1,4 @@
+import { fileURLToPath } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -84,11 +85,12 @@ export default function({ config }: { config?: any }) {
 }
 
 // --- LOCAL EXECUTION CHECK ---
-// Only run Stdio if this file is being executed directly
-// Skip this check when running in Smithery (CommonJS bundle)
-if (typeof import.meta !== 'undefined' && import.meta.url) {
-  const __filename = new URL(import.meta.url).pathname;
-  if (process.argv[1] === __filename) {
+// Robust check that works on Windows/Mac/Linux
+if (import.meta.url) {
+  const currentPath = fileURLToPath(import.meta.url);
+  const executedPath = fs.realpathSync(process.argv[1]); // Resolves symlinks
+
+  if (currentPath === executedPath) {
     async function main() {
       const server = createServerInstance();
       const transport = new StdioServerTransport();
