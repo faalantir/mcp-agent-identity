@@ -1,5 +1,4 @@
 runtime: "typescript"
 startCommand:
-  type: "stdio"
-  command: "node"
-  args: ["dist/index.js"]
+  type: "sse"
+  url: "/sse"
