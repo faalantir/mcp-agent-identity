@@ -1,4 +1,3 @@
-// src/index.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -7,40 +6,45 @@ import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 
-// --- CONFIGURATION ---
-let IDENTITY_FILE: string;
+// --- GLOBAL BACKUP ---
+// If file storage fails (Cloud/Smithery), we store the identity here in RAM.
+let memoryIdentity: any = null;
 
+// --- CONFIGURATION ---
+// We try to find a writable path, but we won't crash if we can't.
+let IDENTITY_FILE: string;
 try {
-  // Try to use the project folder first (Best for Local Users)
-  IDENTITY_FILE = path.join(path.dirname(process.argv[1]), "..", "identity.json");
-  // Test if we can write here
-  fs.accessSync(path.dirname(IDENTITY_FILE), fs.constants.W_OK);
-} catch (error) {
-  // Fallback: Use the system temp folder (Best for Cloud/Read-Only)
-  console.error("⚠️ Local folder is read-only. Falling back to temporary directory.");
+  IDENTITY_FILE = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
+} catch (e) {
   IDENTITY_FILE = path.join(os.tmpdir(), "agent-identity.json");
 }
 
-// --- HELPER: Load/Save Keys ---
+// --- HELPER: Load Identity (Disk -> RAM -> Null) ---
 function loadIdentity() {
+  // 1. Try Disk
   try {
     if (fs.existsSync(IDENTITY_FILE)) {
-      const fileContent = fs.readFileSync(IDENTITY_FILE, "utf-8");
-      if (!fileContent.trim()) return null;
-      return JSON.parse(fileContent);
+      const content = fs.readFileSync(IDENTITY_FILE, "utf-8");
+      if (content.trim()) return JSON.parse(content);
     }
-  } catch (error) {
-    console.error("⚠️ Could not load identity.");
-    return null;
+  } catch (e) {
+    // Ignore disk errors
   }
-  return null;
+
+  // 2. Try RAM (Fallback)
+  return memoryIdentity;
 }
 
+// --- HELPER: Save Identity (Disk -> RAM) ---
 function saveIdentity(identity: any) {
+  // 1. Always save to RAM first (so it works immediately in this session)
+  memoryIdentity = identity;
+
+  // 2. Try to save to Disk (Bonus)
   try {
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
-  } catch (error) {
-    console.error(`⚠️ Failed to save identity to ${IDENTITY_FILE}. Running in-memory only.`);
+  } catch (e) {
+    console.error("⚠️ Disk write failed. Using in-memory storage only.");
   }
 }
 
@@ -65,6 +69,7 @@ server.tool(
       };
     }
 
+    // Generate Keys
     const { publicKey, privateKey } = generateKeyPairSync("rsa", {
       modulusLength: 2048,
       publicKeyEncoding: { type: "spki", format: "pem" },
@@ -72,6 +77,8 @@ server.tool(
     });
 
     const newIdentity = { name, publicKey, privateKey, created: new Date().toISOString() };
+    
+    // Save (Will fallback to RAM if disk fails)
     saveIdentity(newIdentity);
 
     return {
@@ -116,6 +123,7 @@ server.tool(
     publicKey: z.string().describe("The public key")
   },
   async ({ message, signature, publicKey }) => {
+    // Clean inputs
     const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
     let cleanKey = publicKey.trim();
     if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) {
