@@ -1,0 +1,23 @@
+{
+  "name": "@agent-identity/verify",
+  "version": "0.1.0",
+  "description": "The official verification SDK for the Agent Identity Protocol",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [
+    "agent",
+    "mcp",
+    "identity",
+    "crypto",
+    "signature"
+  ],
+  "author": "Mukesh G Chandnani",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

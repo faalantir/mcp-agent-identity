@@ -1,3 +1,9 @@
+# Ignore dependencies everywhere (Root and SDK)
 node_modules/
+
+# Ignore builds everywhere
 dist/
+
+# Ignore secrets
 identity.json
+.env

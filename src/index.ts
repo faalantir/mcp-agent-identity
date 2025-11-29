@@ -7,12 +7,22 @@ import * as fs from "fs";
 import * as path from "path";
 
 // --- CONFIGURATION ---
-const IDENTITY_FILE = path.resolve(process.cwd(), "identity.json");
+const IDENTITY_FILE = path.join(path.dirname(process.argv[1]), "..", "identity.json");
 
 // --- HELPER: Load/Save Keys ---
 function loadIdentity() {
   if (fs.existsSync(IDENTITY_FILE)) {
-    return JSON.parse(fs.readFileSync(IDENTITY_FILE, "utf-8"));
+    try {
+      const fileContent = fs.readFileSync(IDENTITY_FILE, "utf-8");
+      // Check if file is empty
+      if (!fileContent.trim()) {
+        return null; 
+      }
+      return JSON.parse(fileContent);
+    } catch (error) {
+      console.error("⚠️ Warning: identity.json was corrupt or empty. Starting fresh.");
+      return null; // Return null so we can create a fresh identity
+    }
   }
   return null;
 }
@@ -89,7 +99,6 @@ server.tool(
   }
 );
 
-// This lets the user verify if a signature is valid, acting as the "Bank"
 // --- TOOL 3: Verify Signature ---
 server.tool(
   "verify_signature",
