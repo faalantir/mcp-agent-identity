@@ -1,4 +1,3 @@
-import { fileURLToPath } from "url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -6,16 +5,25 @@ import { generateKeyPairSync, sign } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
+import { fileURLToPath } from "url";
 
 // --- CONFIGURATION ---
+// Priority 1: User defined path (via Environment Variable)
+// Priority 2: Project folder (if writable)
+// Priority 3: System Temp folder (Fallback)
 let IDENTITY_FILE: string;
-try {
-  const projectPath = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
-  // Check writable
-  fs.accessSync(path.dirname(projectPath), fs.constants.W_OK);
-  IDENTITY_FILE = projectPath;
-} catch (e) {
-  IDENTITY_FILE = path.join(os.tmpdir(), "agent-identity.json");
+
+if (process.env.AGENT_IDENTITY_PATH) {
+  IDENTITY_FILE = process.env.AGENT_IDENTITY_PATH;
+  console.error(`Using custom identity path: ${IDENTITY_FILE}`);
+} else {
+  try {
+    const projectPath = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
+    fs.accessSync(path.dirname(projectPath), fs.constants.W_OK);
+    IDENTITY_FILE = projectPath;
+  } catch (e) {
+    IDENTITY_FILE = path.join(os.tmpdir(), "agent-identity.json");
+  }
 }
 
 // --- HELPERS ---
@@ -31,21 +39,24 @@ function loadIdentity() {
 
 function saveIdentity(identity: any) {
   try {
+    // Ensure directory exists if user provided a custom path
+    const dir = path.dirname(IDENTITY_FILE);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
   } catch (e) {
-    console.error("⚠️ Disk write failed. Identity is RAM-only.");
+    console.error(`⚠️ Disk write failed to ${IDENTITY_FILE}. Identity is RAM-only.`);
   }
 }
 
-// --- SERVER FACTORY FUNCTION ---
-// Smithery expects a function that returns a server
+// --- SERVER FACTORY ---
 function createServerInstance() {
   const server = new McpServer({
     name: "Agent Identity Wallet",
-    version: "1.0.0",
+    version: "1.1.0",
   });
 
-  // --- TOOLS ---
+  // Tool 1: Create
   server.tool("create_identity", { name: z.string() }, async ({ name }) => {
     if (loadIdentity()) return { content: [{ type: "text", text: `Error: Identity exists.` }] };
     const { publicKey, privateKey } = generateKeyPairSync("rsa", {
@@ -55,6 +66,14 @@ function createServerInstance() {
     return { content: [{ type: "text", text: `✅ Identity created for ${name}.\n\nPUBLIC KEY:\n${publicKey}` }] };
   });
 
+  // Tool 2: Get Info (NEW!)
+  server.tool("get_identity", {}, async () => {
+    const identity = loadIdentity();
+    if (!identity) return { content: [{ type: "text", text: "ℹ️ No identity found." }] };
+    return { content: [{ type: "text", text: `👤 Agent Name: ${identity.name}\n📂 Location: ${IDENTITY_FILE}\n\nPUBLIC KEY:\n${identity.publicKey}` }] };
+  });
+
+  // Tool 3: Sign
   server.tool("sign_message", { message: z.string() }, async ({ message }) => {
     const identity = loadIdentity();
     if (!identity) return { isError: true, content: [{ type: "text", text: "❌ No identity found." }] };
@@ -62,6 +81,7 @@ function createServerInstance() {
     return { content: [{ type: "text", text: `📝 Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signature.toString("hex")}` }] };
   });
 
+  // Tool 4: Verify
   server.tool("verify_signature", { message: z.string(), signature: z.string(), publicKey: z.string() }, async ({ message, signature, publicKey }) => {
     const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
     let cleanKey = publicKey.trim();
@@ -75,31 +95,31 @@ function createServerInstance() {
     } catch (e: any) { return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; }
   });
 
+  // Tool 5: Revoke/Delete (NEW!)
+  server.tool("revoke_identity", {}, async () => {
+    try {
+      if (fs.existsSync(IDENTITY_FILE)) {
+        fs.unlinkSync(IDENTITY_FILE);
+        return { content: [{ type: "text", text: "✅ Identity revoked. File deleted." }] };
+      }
+      return { content: [{ type: "text", text: "ℹ️ No file found to delete." }] };
+    } catch(e: any) { return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; }
+  });
+
   return server;
 }
 
-// --- EXPORT FOR SMITHERY ---
-// Stateless mode: function that takes { config } and returns server
-export default function({ config }: { config?: any }) {
-  return createServerInstance();
-}
+export default function({ config }: { config?: any }) { return createServerInstance(); }
 
-// --- LOCAL EXECUTION CHECK ---
-// Robust check that works on Windows/Mac/Linux
-if (import.meta.url) {
-  const currentPath = fileURLToPath(import.meta.url);
-  const executedPath = fs.realpathSync(process.argv[1]); // Resolves symlinks
-
-  if (currentPath === executedPath) {
+if (typeof import.meta !== 'undefined' && import.meta.url) {
+  const __filename = fileURLToPath(import.meta.url);
+  if (process.argv[1] === __filename) {
     async function main() {
       const server = createServerInstance();
       const transport = new StdioServerTransport();
       await server.connect(transport);
       console.error("Agent Identity Server running on stdio...");
     }
-    main().catch((error) => {
-      console.error("Fatal error:", error);
-      process.exit(1);
-    });
+    main().catch((error) => { console.error("Fatal error:", error); process.exit(1); });
   }
 }
