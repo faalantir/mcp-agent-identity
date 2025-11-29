@@ -17,11 +17,9 @@
     "@agent-identity/verify": "^0.1.0",
     "@modelcontextprotocol/sdk": "^1.23.0",
     "@smithery/sdk": "^1.7.4",
-    "express": "^5.1.0",
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@types/express": "^5.0.5",
     "@types/node": "^24.10.1"
   }
 }

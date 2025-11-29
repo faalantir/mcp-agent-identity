@@ -1,42 +1,61 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { z } from "zod";
 import { generateKeyPairSync, sign } from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import express from "express"; // Standard Web Server
-
-// --- GLOBAL BACKUP ---
-let memoryIdentity: any = null;
 
 // --- CONFIGURATION ---
+// We determine the file path safely.
+// If we can't write to the project folder, we use the system temp folder.
 let IDENTITY_FILE: string;
 try {
-  IDENTITY_FILE = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
+  // Try project folder first
+  const projectPath = path.join(path.dirname(process.argv[1] || process.cwd()), "..", "identity.json");
+  // Check if we can write here (this throws if read-only)
+  fs.accessSync(path.dirname(projectPath), fs.constants.W_OK);
+  IDENTITY_FILE = projectPath;
 } catch (e) {
+  // Fallback to /tmp which is always writable
   IDENTITY_FILE = path.join(os.tmpdir(), "agent-identity.json");
+  console.error(`⚠️ Read-only environment. Using temp path: ${IDENTITY_FILE}`);
 }
+
+// --- GLOBAL MEMORY BACKUP ---
+let memoryIdentity: any = null;
 
 // --- HELPER: Load Identity ---
 function loadIdentity() {
   try {
+    // 1. Try Memory First
+    if (memoryIdentity) return memoryIdentity;
+
+    // 2. Try Disk
     if (fs.existsSync(IDENTITY_FILE)) {
       const content = fs.readFileSync(IDENTITY_FILE, "utf-8");
-      if (content.trim()) return JSON.parse(content);
+      if (content.trim()) {
+        const data = JSON.parse(content);
+        memoryIdentity = data; // Cache it
+        return data;
+      }
     }
-  } catch (e) { }
-  return memoryIdentity;
+  } catch (e) {
+    console.error("⚠️ Error loading identity:", e);
+  }
+  return null;
 }
 
 // --- HELPER: Save Identity ---
 function saveIdentity(identity: any) {
+  // 1. Save to Memory (Always works)
   memoryIdentity = identity;
+
+  // 2. Try Save to Disk
   try {
     fs.writeFileSync(IDENTITY_FILE, JSON.stringify(identity, null, 2));
   } catch (e) {
-    console.error("⚠️ Disk write failed. Using in-memory storage only.");
+    console.error("⚠️ Failed to write to disk. Identity is in-memory only.");
   }
 }
 
@@ -46,84 +65,90 @@ const server = new McpServer({
   version: "1.0.0",
 });
 
-// --- TOOLS ---
-server.tool("create_identity", { name: z.string() }, async ({ name }) => {
-  const existing = loadIdentity();
-  if (existing) return { content: [{ type: "text", text: `Error: Identity exists for '${existing.name}'.` }] };
-  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
-    modulusLength: 2048, publicKeyEncoding: { type: "spki", format: "pem" }, privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  saveIdentity({ name, publicKey, privateKey, created: new Date().toISOString() });
-  return { content: [{ type: "text", text: `✅ Identity created for ${name}.\n\nPUBLIC KEY:\n${publicKey}` }] };
-});
+// --- TOOL 1: Create Identity ---
+server.tool(
+  "create_identity",
+  { name: z.string().describe("The name of the agent") },
+  async ({ name }) => {
+    const existing = loadIdentity();
+    if (existing) {
+      return { content: [{ type: "text", text: `Error: An identity already exists for '${existing.name}'.` }] };
+    }
 
-server.tool("sign_message", { message: z.string() }, async ({ message }) => {
-  const identity = loadIdentity();
-  if (!identity) return { isError: true, content: [{ type: "text", text: "❌ No identity found." }] };
-  const signature = sign("sha256", Buffer.from(message), identity.privateKey);
-  return { content: [{ type: "text", text: `📝 Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signature.toString("hex")}` }] };
-});
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
 
-server.tool("verify_signature", { message: z.string(), signature: z.string(), publicKey: z.string() }, async ({ message, signature, publicKey }) => {
-  const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
-  let cleanKey = publicKey.trim();
-  if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) cleanKey = `-----BEGIN PUBLIC KEY-----\n${cleanKey}\n-----END PUBLIC KEY-----`;
-  const verify = require("crypto").createVerify("sha256");
-  verify.update(message);
-  verify.end();
-  try {
-    const isValid = verify.verify(cleanKey, Buffer.from(cleanSignature, "hex"));
-    return { content: [{ type: "text", text: isValid ? "✅ VALID" : "❌ INVALID" }] };
-  } catch (e: any) { return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] }; }
-});
+    const newIdentity = { name, publicKey, privateKey, created: new Date().toISOString() };
+    saveIdentity(newIdentity);
+
+    return {
+      content: [{
+        type: "text",
+        text: `✅ Identity created for ${name}.\n\nPUBLIC KEY:\n${publicKey}`
+      }],
+    };
+  }
+);
+
+// --- TOOL 2: Sign Message ---
+server.tool(
+  "sign_message",
+  { message: z.string().describe("The text to sign") },
+  async ({ message }) => {
+    const identity = loadIdentity();
+    if (!identity) {
+      return { isError: true, content: [{ type: "text", text: "❌ No identity found. Create one first." }] };
+    }
+    const signature = sign("sha256", Buffer.from(message), identity.privateKey);
+    return {
+      content: [{
+        type: "text",
+        text: `📝 Signed by ${identity.name}.\n\n--- CONTENT ---\n${message}\n\n--- SIGNATURE ---\n${signature.toString("hex")}`
+      }],
+    };
+  }
+);
+
+// --- TOOL 3: Verify Signature ---
+server.tool(
+  "verify_signature",
+  { 
+    message: z.string().describe("The original message"),
+    signature: z.string().describe("The hex signature"),
+    publicKey: z.string().describe("The public key")
+  },
+  async ({ message, signature, publicKey }) => {
+    const cleanSignature = signature.replace(/[^0-9a-fA-F]/g, '');
+    let cleanKey = publicKey.trim();
+    if (!cleanKey.startsWith("-----BEGIN PUBLIC KEY-----")) {
+      cleanKey = `-----BEGIN PUBLIC KEY-----\n${cleanKey}\n-----END PUBLIC KEY-----`;
+    }
+
+    const verify = require("crypto").createVerify("sha256");
+    verify.update(message);
+    verify.end();
+    
+    try {
+      const isValid = verify.verify(cleanKey, Buffer.from(cleanSignature, "hex"));
+      return { content: [{ type: "text", text: isValid ? "✅ VALID" : "❌ INVALID" }] };
+    } catch (e: any) {
+      return { isError: true, content: [{ type: "text", text: `Error: ${e.message}` }] };
+    }
+  }
+);
 
 // --- MAIN ---
 async function main() {
-  const port = process.env.PORT;
-
-  if (port) {
-    // --- HTTP MODE (Express) ---
-    const app = express();
-    app.use(express.json());
-    
-    // Store transports by session ID
-    const transports: { [sessionId: string]: SSEServerTransport } = {};
-
-    app.get("/sse", async (req, res) => {
-      console.error("SSE connection received");
-      const transport = new SSEServerTransport("/messages", res);
-      transports[transport.sessionId] = transport;
-      
-      // Clean up on disconnect
-      res.on("close", () => {
-        delete transports[transport.sessionId];
-        console.error(`Session ${transport.sessionId} closed`);
-      });
-      
-      await server.connect(transport);
-    });
-
-    app.post("/messages", async (req, res) => {
-      const sessionId = req.query.sessionId as string;
-      const transport = transports[sessionId];
-      
-      if (!transport) {
-        console.error(`No transport found for session ${sessionId}`);
-        return res.status(404).send("Session not found");
-      }
-      
-      await transport.handlePostMessage(req, res);
-    });
-
-    app.listen(port, () => {
-      console.error(`Agent Identity Server running on HTTP port ${port}`);
-    });
-  } else {
-    // --- STDIO MODE (Local) ---
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
-    console.error("Agent Identity Server running on stdio...");
-  }
+  // Pure Stdio. No Express. No HTTP. 
+  // Smithery will wrap this automatically.
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  
+  // NOTE: usage of console.error is safe. console.log is NOT safe.
+  console.error("Agent Identity Server running on stdio transport...");
 }
 
 main().catch((error) => {

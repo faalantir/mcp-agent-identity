@@ -1,4 +1,2 @@
+# smithery.yaml
 runtime: "typescript"
-startCommand:
-  type: "sse"
-  url: "/sse"
